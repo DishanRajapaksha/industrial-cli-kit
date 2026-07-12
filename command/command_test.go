@@ -155,6 +155,61 @@ func TestNormalizeGlobalFlagsForRegistryAppliesCommandPolicy(t *testing.T) {
 	}
 }
 
+func TestFilterGlobalFlagsForRegistryKeepsPrefixAndAppliesPolicy(t *testing.T) {
+	registry := Registry{
+		GlobalFlags: []Flag{
+			{Name: "config", TakesValue: true},
+			{Name: "format", TakesValue: true},
+			{Name: "timeout", TakesValue: true},
+			{Name: "verbose"},
+		},
+		Commands: []Command{
+			{Name: "listen"},
+			{Name: "test-connection", GlobalFlags: []string{"config", "timeout", "verbose"}},
+			{Name: "init-config", GlobalFlags: []string{}},
+		},
+	}
+
+	tests := []struct {
+		name string
+		args []string
+		want []string
+	}{
+		{
+			name: "inherits all globals before command",
+			args: []string{"--config", "site.yaml", "--format", "jsonl", "--verbose", "listen", "--duration", "30s"},
+			want: []string{"--config", "site.yaml", "--format", "jsonl", "--verbose", "listen", "--duration", "30s"},
+		},
+		{
+			name: "drops unsupported prefix global",
+			args: []string{"--config", "site.yaml", "--format", "json", "--timeout", "5s", "test-connection"},
+			want: []string{"--config", "site.yaml", "--timeout", "5s", "test-connection"},
+		},
+		{
+			name: "drops every prefix global",
+			args: []string{"--config", "site.yaml", "--verbose", "init-config", "--output", "new.yaml"},
+			want: []string{"init-config", "--output", "new.yaml"},
+		},
+		{
+			name: "unknown command keeps globals",
+			args: []string{"--verbose", "unknown"},
+			want: []string{"--verbose", "unknown"},
+		},
+	}
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			got, err := FilterGlobalFlagsForRegistry(test.args, registry)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if !reflect.DeepEqual(got, test.want) {
+				t.Fatalf("FilterGlobalFlagsForRegistry() = %#v, want %#v", got, test.want)
+			}
+		})
+	}
+}
+
 func TestNormalizeGlobalFlagsRejectsUnknownPrefixFlag(t *testing.T) {
 	if _, err := NormalizeGlobalFlags([]string{"--endpoint", "x", "read"}, globalFlags); err == nil {
 		t.Fatal("unknown global flag accepted")
