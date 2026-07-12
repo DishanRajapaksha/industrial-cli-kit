@@ -20,9 +20,9 @@ type Command struct {
 	Flags       []Flag
 	Subcommands []Command
 
-	// LeadingArgs is the number of positional arguments that must remain before
-	// flags. It is useful for command shapes such as "read coils --format json"
-	// and "read-point active_power --format json".
+	// LeadingArgs is the maximum number of positional arguments that should
+	// remain before flags. Only actual non-flag tokens are skipped, allowing the
+	// same metadata to describe required and optional leading arguments.
 	LeadingArgs int
 }
 
@@ -59,9 +59,17 @@ func NormalizeGlobalFlagsForRegistry(args []string, registry Registry) ([]string
 			return 0
 		}
 		for _, registered := range registry.Commands {
-			if registered.Name == commandArgs[0] {
-				return 1 + registered.LeadingArgs
+			if registered.Name != commandArgs[0] {
+				continue
 			}
+			index := 1
+			for remaining := registered.LeadingArgs; remaining > 0 && index < len(commandArgs); remaining-- {
+				if isFlagToken(commandArgs[index]) {
+					break
+				}
+				index++
+			}
+			return index
 		}
 		return 1
 	})
@@ -86,7 +94,7 @@ func normalizeGlobalFlags(args []string, flags []Flag, insertionIndex func([]str
 			}
 			return insertGlobals(args[index+1:], globals, insertionIndex), nil
 		}
-		if !strings.HasPrefix(arg, "-") || arg == "-" {
+		if !isFlagToken(arg) {
 			return insertGlobals(args[index:], globals, insertionIndex), nil
 		}
 		if arg == "--help" || arg == "-h" || arg == "--version" || arg == "-v" {
@@ -107,7 +115,7 @@ func normalizeGlobalFlags(args []string, flags []Flag, insertionIndex func([]str
 		}
 		if !inline {
 			index++
-			if index >= len(args) || strings.HasPrefix(args[index], "-") {
+			if index >= len(args) || isFlagToken(args[index]) {
 				return nil, fmt.Errorf("%s requires a value", name)
 			}
 			value = args[index]
@@ -118,6 +126,10 @@ func normalizeGlobalFlags(args []string, flags []Flag, insertionIndex func([]str
 		globals = append(globals, name, value)
 	}
 	return nil, fmt.Errorf("command is required")
+}
+
+func isFlagToken(value string) bool {
+	return value != "-" && strings.HasPrefix(value, "-")
 }
 
 func insertGlobals(args, globals []string, insertionIndex func([]string) int) []string {
