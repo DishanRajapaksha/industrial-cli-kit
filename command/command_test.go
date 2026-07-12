@@ -22,6 +22,29 @@ func TestNormalizeGlobalFlags(t *testing.T) {
 	}
 }
 
+func TestNormalizeGlobalFlagsAllowsExplicitEmptyValues(t *testing.T) {
+	flags := append(append([]Flag(nil), globalFlags...), Flag{Name: "path", TakesValue: true, AllowEmpty: true})
+	for _, args := range [][]string{
+		{"--path=", "read", "tag"},
+		{"--path", "", "read", "tag"},
+	} {
+		got, err := NormalizeGlobalFlags(args, flags)
+		if err != nil {
+			t.Fatalf("NormalizeGlobalFlags(%#v): %v", args, err)
+		}
+		want := []string{"read", "--path", "", "tag"}
+		if !reflect.DeepEqual(got, want) {
+			t.Fatalf("NormalizeGlobalFlags(%#v) = %#v, want %#v", args, got, want)
+		}
+	}
+}
+
+func TestNormalizeGlobalFlagsRejectsUnexpectedEmptyValues(t *testing.T) {
+	if _, err := NormalizeGlobalFlags([]string{"--config=", "read"}, globalFlags); err == nil {
+		t.Fatal("empty config value accepted")
+	}
+}
+
 func TestNormalizeGlobalFlagsForRegistryPreservesLeadingArguments(t *testing.T) {
 	registry := Registry{
 		GlobalFlags: globalFlags,
