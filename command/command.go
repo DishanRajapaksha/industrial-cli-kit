@@ -19,6 +19,11 @@ type Command struct {
 	Summary     string
 	Flags       []Flag
 	Subcommands []Command
+
+	// LeadingArgs is the number of positional arguments that must remain before
+	// flags. It is useful for command shapes such as "read coils --format json"
+	// and "read-point active_power --format json".
+	LeadingArgs int
 }
 
 // Registry is the declarative public shape of a CLI.
@@ -41,6 +46,28 @@ func (r Registry) Names() []string {
 // immediately after it, allowing command-local flag parsing without changing
 // the public invocation form.
 func NormalizeGlobalFlags(args []string, flags []Flag) ([]string, error) {
+	return normalizeGlobalFlags(args, flags, func(_ []string) int { return 1 })
+}
+
+// NormalizeGlobalFlagsForRegistry moves recognized global flags after the
+// command's declared positional prefix. Unknown commands retain the traditional
+// placement immediately after the top-level command so the caller can report
+// the unknown command normally.
+func NormalizeGlobalFlagsForRegistry(args []string, registry Registry) ([]string, error) {
+	return normalizeGlobalFlags(args, registry.GlobalFlags, func(commandArgs []string) int {
+		if len(commandArgs) == 0 {
+			return 0
+		}
+		for _, registered := range registry.Commands {
+			if registered.Name == commandArgs[0] {
+				return 1 + registered.LeadingArgs
+			}
+		}
+		return 1
+	})
+}
+
+func normalizeGlobalFlags(args []string, flags []Flag, insertionIndex func([]string) int) ([]string, error) {
 	if len(args) == 0 {
 		return nil, nil
 	}
@@ -57,10 +84,10 @@ func NormalizeGlobalFlags(args []string, flags []Flag) ([]string, error) {
 			if index+1 >= len(args) {
 				return nil, fmt.Errorf("command is required after --")
 			}
-			return appendAfterCommand(args[index+1:], globals), nil
+			return insertGlobals(args[index+1:], globals, insertionIndex), nil
 		}
 		if !strings.HasPrefix(arg, "-") || arg == "-" {
-			return appendAfterCommand(args[index:], globals), nil
+			return insertGlobals(args[index:], globals, insertionIndex), nil
 		}
 		if arg == "--help" || arg == "-h" || arg == "--version" || arg == "-v" {
 			return args[index:], nil
@@ -93,13 +120,20 @@ func NormalizeGlobalFlags(args []string, flags []Flag) ([]string, error) {
 	return nil, fmt.Errorf("command is required")
 }
 
-func appendAfterCommand(args, globals []string) []string {
+func insertGlobals(args, globals []string, insertionIndex func([]string) int) []string {
 	if len(args) == 0 || len(globals) == 0 {
 		return args
 	}
+	index := insertionIndex(args)
+	if index < 0 {
+		index = 0
+	}
+	if index > len(args) {
+		index = len(args)
+	}
 	normalized := make([]string, 0, len(args)+len(globals))
-	normalized = append(normalized, args[0])
+	normalized = append(normalized, args[:index]...)
 	normalized = append(normalized, globals...)
-	normalized = append(normalized, args[1:]...)
+	normalized = append(normalized, args[index:]...)
 	return normalized
 }
