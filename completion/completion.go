@@ -4,6 +4,7 @@ package completion
 import (
 	"fmt"
 	"io"
+	"sort"
 	"strings"
 
 	"github.com/DishanRajapaksha/industrial-cli-kit/command"
@@ -24,34 +25,107 @@ func Write(w io.Writer, shell string, registry command.Registry) error {
 }
 
 func bash(registry command.Registry) string {
-	commands := strings.Join(registry.Names(), " ")
-	flags := strings.Join(flagNames(registry.GlobalFlags), " ")
+	var cases strings.Builder
+	for _, cmd := range registry.Commands {
+		words := mergeWords(flagNames(registry.GlobalFlags), flagNames(cmd.Flags))
+		if len(cmd.Subcommands) > 0 {
+			words = mergeWords(commandNames(cmd.Subcommands), words)
+		}
+		fmt.Fprintf(&cases, "    %s) words=%q ;;\n", cmd.Name, strings.Join(words, " "))
+		for _, sub := range cmd.Subcommands {
+			nested := mergeWords(flagNames(registry.GlobalFlags), flagNames(cmd.Flags), flagNames(sub.Flags))
+			fmt.Fprintf(&cases, "    %s:%s) words=%q ;;\n", cmd.Name, sub.Name, strings.Join(nested, " "))
+		}
+	}
+
 	return fmt.Sprintf(`_%[1]s_completion() {
-  local cur="${COMP_WORDS[COMP_CWORD]}"
+  local cur command nested key words
+  cur="${COMP_WORDS[COMP_CWORD]}"
+  command="${COMP_WORDS[1]}"
+  nested="${COMP_WORDS[2]}"
+
   if [ "$COMP_CWORD" -eq 1 ]; then
     COMPREPLY=( $(compgen -W "%[2]s" -- "$cur") )
     return 0
   fi
-  COMPREPLY=( $(compgen -W "%[3]s" -- "$cur") )
+
+  key="$command"
+  if [ "$COMP_CWORD" -gt 2 ] && [[ "$nested" != -* ]]; then
+    key="$command:$nested"
+  fi
+
+  case "$key" in
+%[3]s    *) words="%[4]s" ;;
+  esac
+  COMPREPLY=( $(compgen -W "$words" -- "$cur") )
 }
 complete -F _%[1]s_completion %[1]s
-`, registry.Binary, commands, flags)
+`, shellName(registry.Binary), strings.Join(registry.Names(), " "), cases.String(), strings.Join(flagNames(registry.GlobalFlags), " "))
 }
 
 func zsh(registry command.Registry) string {
-	commands := strings.Join(registry.Names(), " ")
-	flags := strings.Join(flagNames(registry.GlobalFlags), " ")
+	var commandSpecs []string
+	var cases strings.Builder
+	for _, cmd := range registry.Commands {
+		summary := cmd.Summary
+		if summary == "" {
+			summary = cmd.Name
+		}
+		commandSpecs = append(commandSpecs, fmt.Sprintf("'%s:%s'", cmd.Name, escapeZsh(summary)))
+
+		flags := mergeWords(flagNames(registry.GlobalFlags), flagNames(cmd.Flags))
+		if len(cmd.Subcommands) > 0 {
+			var subSpecs []string
+			for _, sub := range cmd.Subcommands {
+				subSummary := sub.Summary
+				if subSummary == "" {
+					subSummary = sub.Name
+				}
+				subSpecs = append(subSpecs, fmt.Sprintf("'%s:%s'", sub.Name, escapeZsh(subSummary)))
+			}
+			fmt.Fprintf(&cases, "    %s)\n      if (( CURRENT == 3 )); then\n        _describe 'subcommand' '(%s)'\n      else\n        _values 'flag' %s\n      fi\n      ;;\n", cmd.Name, strings.Join(subSpecs, " "), quoteWords(strings.Join(flags, " ")))
+			for _, sub := range cmd.Subcommands {
+				nested := mergeWords(flagNames(registry.GlobalFlags), flagNames(cmd.Flags), flagNames(sub.Flags))
+				fmt.Fprintf(&cases, "    %s:%s) _values 'flag' %s ;;\n", cmd.Name, sub.Name, quoteWords(strings.Join(nested, " ")))
+			}
+			continue
+		}
+		fmt.Fprintf(&cases, "    %s) _values 'flag' %s ;;\n", cmd.Name, quoteWords(strings.Join(flags, " ")))
+	}
+
 	return fmt.Sprintf(`#compdef %[1]s
 
-_%[1]s_completion() {
+_%[2]s_completion() {
+  local command nested key
+  command="$words[2]"
+  nested="$words[3]"
+
   if (( CURRENT == 2 )); then
-    _values 'command' %[2]s
-  else
-    _values 'flag' %[3]s
+    local -a commands
+    commands=(%[3]s)
+    _describe 'command' commands
+    return
   fi
+
+  key="$command"
+  if (( CURRENT > 3 )) && [[ "$nested" != -* ]]; then
+    key="$command:$nested"
+  fi
+
+  case "$key" in
+%[4]s    *) _values 'flag' %[5]s ;;
+  esac
 }
-_%[1]s_completion
-`, registry.Binary, quoteWords(commands), quoteWords(flags))
+_%[2]s_completion
+`, registry.Binary, shellName(registry.Binary), strings.Join(commandSpecs, " "), cases.String(), quoteWords(strings.Join(flagNames(registry.GlobalFlags), " ")))
+}
+
+func commandNames(commands []command.Command) []string {
+	names := make([]string, 0, len(commands))
+	for _, cmd := range commands {
+		names = append(names, cmd.Name)
+	}
+	return names
 }
 
 func flagNames(flags []command.Flag) []string {
@@ -62,9 +136,35 @@ func flagNames(flags []command.Flag) []string {
 	return names
 }
 
+func mergeWords(groups ...[]string) []string {
+	seen := make(map[string]struct{})
+	for _, group := range groups {
+		for _, word := range group {
+			if word != "" {
+				seen[word] = struct{}{}
+			}
+		}
+	}
+	words := make([]string, 0, len(seen))
+	for word := range seen {
+		words = append(words, word)
+	}
+	sort.Strings(words)
+	return words
+}
+
+func shellName(binary string) string {
+	replacer := strings.NewReplacer("-", "_", ".", "_")
+	return replacer.Replace(binary)
+}
+
 func quoteWords(words string) string {
 	if words == "" {
 		return "''"
 	}
 	return "'" + strings.ReplaceAll(words, " ", "' '") + "'"
+}
+
+func escapeZsh(value string) string {
+	return strings.ReplaceAll(value, "'", "'\\''")
 }
