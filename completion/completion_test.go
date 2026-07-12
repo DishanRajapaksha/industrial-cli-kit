@@ -9,10 +9,16 @@ import (
 )
 
 var registry = command.Registry{
-	Binary:      "example-cli",
-	GlobalFlags: []command.Flag{{Name: "config", TakesValue: true}, {Name: "verbose"}},
+	Binary: "example-cli",
+	GlobalFlags: []command.Flag{
+		{Name: "config", TakesValue: true},
+		{Name: "endpoint", TakesValue: true},
+		{Name: "verbose"},
+	},
 	Commands: []command.Command{
 		{Name: "read", Summary: "Read a value", Flags: []command.Flag{{Name: "node", TakesValue: true}}},
+		{Name: "validate-config", Summary: "Validate configuration", GlobalFlags: []string{"config", "verbose"}},
+		{Name: "init-config", Summary: "Initialise configuration", GlobalFlags: []string{}, Flags: []command.Flag{{Name: "output", TakesValue: true}}},
 		{Name: "write-point", Summary: "Write a named point", LeadingArgs: 1, Flags: []command.Flag{{Name: "value", TakesValue: true}, {Name: "yes"}}},
 		{
 			Name:    "send",
@@ -31,7 +37,7 @@ func TestWriteBashIncludesCommandsAndFlags(t *testing.T) {
 	if err := Write(&out, "bash", registry); err != nil {
 		t.Fatal(err)
 	}
-	for _, want := range []string{"read", "watch", "send", "start", "write-point", "--config", "--verbose", "--node", "--timeout", "--value", "--yes"} {
+	for _, want := range []string{"read", "watch", "send", "start", "write-point", "validate-config", "init-config", "--config", "--endpoint", "--verbose", "--node", "--timeout", "--value", "--yes"} {
 		if !strings.Contains(out.String(), want) {
 			t.Fatalf("script does not include %q: %s", want, out.String())
 		}
@@ -44,18 +50,49 @@ func TestWriteBashIncludesCommandsAndFlags(t *testing.T) {
 	}
 }
 
+func TestWriteBashAppliesCommandGlobalPolicies(t *testing.T) {
+	var out bytes.Buffer
+	if err := Write(&out, "bash", registry); err != nil {
+		t.Fatal(err)
+	}
+	script := out.String()
+	for _, want := range []string{
+		`read) words="--config --endpoint --node --verbose" ;;`,
+		`validate-config) words="--config --verbose" ;;`,
+		`init-config) words="--output" ;;`,
+	} {
+		if !strings.Contains(script, want) {
+			t.Fatalf("bash policy output missing %q: %s", want, script)
+		}
+	}
+}
+
 func TestWriteZshIncludesSummariesAndNestedFlags(t *testing.T) {
 	var out bytes.Buffer
 	if err := Write(&out, "zsh", registry); err != nil {
 		t.Fatal(err)
 	}
-	for _, want := range []string{"read:Read a value", "send:Send an operation", "start:Start an operation", "write-point:Write a named point", "--node", "--value", "--yes"} {
+	for _, want := range []string{"read:Read a value", "send:Send an operation", "start:Start an operation", "write-point:Write a named point", "validate-config:Validate configuration", "--node", "--value", "--yes"} {
 		if !strings.Contains(out.String(), want) {
 			t.Fatalf("script does not include %q: %s", want, out.String())
 		}
 	}
 	if strings.Contains(out.String(), "write-point:") && strings.Contains(out.String(), "write-point:active") {
 		t.Fatalf("leading argument command was treated as a nested command: %s", out.String())
+	}
+}
+
+func TestWriteZshAppliesCommandGlobalPolicies(t *testing.T) {
+	var out bytes.Buffer
+	if err := Write(&out, "zsh", registry); err != nil {
+		t.Fatal(err)
+	}
+	script := out.String()
+	if !strings.Contains(script, `validate-config) _values 'flag' '--config' '--verbose' ;;`) {
+		t.Fatalf("validate-config completion contains the wrong globals: %s", script)
+	}
+	if !strings.Contains(script, `init-config) _values 'flag' '--output' ;;`) {
+		t.Fatalf("init-config completion contains global flags: %s", script)
 	}
 }
 
