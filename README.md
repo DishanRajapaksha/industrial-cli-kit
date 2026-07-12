@@ -10,7 +10,7 @@ public command-line contract.
 
 - `command`: command registry and global-flag normalisation
 - `completion`: Bash and Zsh completion generation from a registry
-- `contracttest`: reusable baseline command-contract checks
+- `contracttest`: reusable baseline, registry, lifecycle, and completion contract checks
 - `exitcode`: stable process exit statuses
 - `help`: human-readable usage generation from a registry
 - `output`: snapshot and stream output helpers
