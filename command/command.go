@@ -88,6 +88,26 @@ func NormalizeGlobalFlagsForRegistry(args []string, registry Registry) ([]string
 	})
 }
 
+// FilterGlobalFlagsForRegistry keeps recognized global flags before the command
+// while applying its registry policy. This supports CLIs that parse typed global
+// options before dispatching to command-specific flag sets.
+func FilterGlobalFlagsForRegistry(args []string, registry Registry) ([]string, error) {
+	return normalizeGlobalFlags(args, registry.GlobalFlags, func(commandArgs, globals []string) []string {
+		if len(commandArgs) > 0 {
+			for _, registered := range registry.Commands {
+				if registered.Name == commandArgs[0] {
+					globals = filterGlobalArguments(globals, registry.GlobalFlags, registered.GlobalFlags)
+					break
+				}
+			}
+		}
+		filtered := make([]string, 0, len(globals)+len(commandArgs))
+		filtered = append(filtered, globals...)
+		filtered = append(filtered, commandArgs...)
+		return filtered
+	})
+}
+
 func normalizeGlobalFlags(args []string, flags []Flag, place func([]string, []string) []string) ([]string, error) {
 	if len(args) == 0 {
 		return nil, nil
