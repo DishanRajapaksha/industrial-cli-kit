@@ -27,13 +27,18 @@ func Write(w io.Writer, shell string, registry command.Registry) error {
 func bash(registry command.Registry) string {
 	var cases strings.Builder
 	for _, cmd := range registry.Commands {
-		words := mergeWords(flagNames(registry.GlobalFlags), flagNames(cmd.Flags))
+		globals := applicableGlobalFlags(registry.GlobalFlags, cmd.GlobalFlags)
+		words := mergeWords(flagNames(globals), flagNames(cmd.Flags))
 		if len(cmd.Subcommands) > 0 {
 			words = mergeWords(commandNames(cmd.Subcommands), words)
 		}
 		fmt.Fprintf(&cases, "    %s) words=%q ;;\n", cmd.Name, strings.Join(words, " "))
 		for _, sub := range cmd.Subcommands {
-			nested := mergeWords(flagNames(registry.GlobalFlags), flagNames(cmd.Flags), flagNames(sub.Flags))
+			nestedGlobals := globals
+			if sub.GlobalFlags != nil {
+				nestedGlobals = applicableGlobalFlags(registry.GlobalFlags, sub.GlobalFlags)
+			}
+			nested := mergeWords(flagNames(nestedGlobals), flagNames(cmd.Flags), flagNames(sub.Flags))
 			fmt.Fprintf(&cases, "    %s:%s) words=%q ;;\n", cmd.Name, sub.Name, strings.Join(nested, " "))
 		}
 	}
@@ -73,7 +78,8 @@ func zsh(registry command.Registry) string {
 		}
 		commandSpecs = append(commandSpecs, fmt.Sprintf("'%s:%s'", cmd.Name, escapeZsh(summary)))
 
-		flags := mergeWords(flagNames(registry.GlobalFlags), flagNames(cmd.Flags))
+		globals := applicableGlobalFlags(registry.GlobalFlags, cmd.GlobalFlags)
+		flags := mergeWords(flagNames(globals), flagNames(cmd.Flags))
 		if len(cmd.Subcommands) > 0 {
 			var subSpecs []string
 			for _, sub := range cmd.Subcommands {
@@ -85,7 +91,11 @@ func zsh(registry command.Registry) string {
 			}
 			fmt.Fprintf(&cases, "    %s)\n      if (( CURRENT == 3 )); then\n        _describe 'subcommand' '(%s)'\n      else\n        _values 'flag' %s\n      fi\n      ;;\n", cmd.Name, strings.Join(subSpecs, " "), quoteWords(strings.Join(flags, " ")))
 			for _, sub := range cmd.Subcommands {
-				nested := mergeWords(flagNames(registry.GlobalFlags), flagNames(cmd.Flags), flagNames(sub.Flags))
+				nestedGlobals := globals
+				if sub.GlobalFlags != nil {
+					nestedGlobals = applicableGlobalFlags(registry.GlobalFlags, sub.GlobalFlags)
+				}
+				nested := mergeWords(flagNames(nestedGlobals), flagNames(cmd.Flags), flagNames(sub.Flags))
 				fmt.Fprintf(&cases, "    %s:%s) _values 'flag' %s ;;\n", cmd.Name, sub.Name, quoteWords(strings.Join(nested, " ")))
 			}
 			continue
@@ -136,6 +146,23 @@ func commandsWithSubcommands(commands []command.Command) []string {
 		}
 	}
 	return names
+}
+
+func applicableGlobalFlags(flags []command.Flag, policy []string) []command.Flag {
+	if policy == nil {
+		return flags
+	}
+	allowed := make(map[string]struct{}, len(policy))
+	for _, name := range policy {
+		allowed[strings.TrimPrefix(name, "--")] = struct{}{}
+	}
+	filtered := make([]command.Flag, 0, len(policy))
+	for _, flag := range flags {
+		if _, ok := allowed[flag.Name]; ok {
+			filtered = append(filtered, flag)
+		}
+	}
+	return filtered
 }
 
 func flagNames(flags []command.Flag) []string {
