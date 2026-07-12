@@ -28,6 +28,7 @@ func TestNormalizeGlobalFlagsForRegistryPreservesLeadingArguments(t *testing.T) 
 		Commands: []Command{
 			{Name: "read", LeadingArgs: 1},
 			{Name: "read-point", LeadingArgs: 1},
+			{Name: "identify", LeadingArgs: 1},
 		},
 	}
 
@@ -45,6 +46,21 @@ func TestNormalizeGlobalFlagsForRegistryPreservesLeadingArguments(t *testing.T) 
 			name: "arbitrary positional name",
 			args: []string{"--profile", "local", "read-point", "active_power", "--format", "json"},
 			want: []string{"read-point", "active_power", "--profile", "local", "--format", "json"},
+		},
+		{
+			name: "optional positional present",
+			args: []string{"--profile", "local", "identify", "ahu", "--device-id", "42"},
+			want: []string{"identify", "ahu", "--profile", "local", "--device-id", "42"},
+		},
+		{
+			name: "optional positional omitted",
+			args: []string{"--profile", "local", "identify", "--device-id", "42"},
+			want: []string{"identify", "--profile", "local", "--device-id", "42"},
+		},
+		{
+			name: "dash positional",
+			args: []string{"--profile", "local", "read-point", "-", "--format", "json"},
+			want: []string{"read-point", "-", "--profile", "local", "--format", "json"},
 		},
 		{
 			name: "unknown command",
