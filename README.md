@@ -12,6 +12,7 @@ public command-line contract.
 - `completion`: Bash and Zsh completion generation from a registry
 - `contracttest`: reusable baseline command-contract checks
 - `exitcode`: stable process exit statuses
+- `help`: human-readable usage generation from a registry
 - `output`: snapshot and stream output helpers
 - `safety`: dry-run and `--yes` confirmation policy
 
