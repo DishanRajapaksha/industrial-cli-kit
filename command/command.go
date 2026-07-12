@@ -11,6 +11,11 @@ type Flag struct {
 	Name       string
 	TakesValue bool
 	Summary    string
+
+	// AllowEmpty permits an explicitly supplied empty value. It is ignored for
+	// boolean flags and should only be set when an empty string has domain
+	// meaning, such as an empty CIP route path.
+	AllowEmpty bool
 }
 
 // Command is a public command and optional nested subcommands.
@@ -120,7 +125,7 @@ func normalizeGlobalFlags(args []string, flags []Flag, insertionIndex func([]str
 			}
 			value = args[index]
 		}
-		if value == "" {
+		if value == "" && !flag.AllowEmpty {
 			return nil, fmt.Errorf("%s requires a value", name)
 		}
 		globals = append(globals, name, value)
