@@ -29,6 +29,11 @@ type Command struct {
 	// remain before flags. Only actual non-flag tokens are skipped, allowing the
 	// same metadata to describe required and optional leading arguments.
 	LeadingArgs int
+
+	// GlobalFlags restricts which registry global flags apply to this command.
+	// Nil inherits every global flag. A non-nil empty slice allows none. Names
+	// are written without leading dashes.
+	GlobalFlags []string
 }
 
 // Registry is the declarative public shape of a CLI.
@@ -51,22 +56,25 @@ func (r Registry) Names() []string {
 // immediately after it, allowing command-local flag parsing without changing
 // the public invocation form.
 func NormalizeGlobalFlags(args []string, flags []Flag) ([]string, error) {
-	return normalizeGlobalFlags(args, flags, func(_ []string) int { return 1 })
+	return normalizeGlobalFlags(args, flags, func(commandArgs, globals []string) []string {
+		return insertGlobalsAt(commandArgs, globals, 1)
+	})
 }
 
 // NormalizeGlobalFlagsForRegistry moves recognized global flags after the
-// command's declared positional prefix. Unknown commands retain the traditional
-// placement immediately after the top-level command so the caller can report
-// the unknown command normally.
+// command's declared positional prefix and applies its global-flag policy.
+// Unknown commands retain every global flag immediately after the top-level
+// command so the caller can report the unknown command normally.
 func NormalizeGlobalFlagsForRegistry(args []string, registry Registry) ([]string, error) {
-	return normalizeGlobalFlags(args, registry.GlobalFlags, func(commandArgs []string) int {
+	return normalizeGlobalFlags(args, registry.GlobalFlags, func(commandArgs, globals []string) []string {
 		if len(commandArgs) == 0 {
-			return 0
+			return commandArgs
 		}
 		for _, registered := range registry.Commands {
 			if registered.Name != commandArgs[0] {
 				continue
 			}
+			globals = filterGlobalArguments(globals, registry.GlobalFlags, registered.GlobalFlags)
 			index := 1
 			for remaining := registered.LeadingArgs; remaining > 0 && index < len(commandArgs); remaining-- {
 				if isFlagToken(commandArgs[index]) {
@@ -74,13 +82,13 @@ func NormalizeGlobalFlagsForRegistry(args []string, registry Registry) ([]string
 				}
 				index++
 			}
-			return index
+			return insertGlobalsAt(commandArgs, globals, index)
 		}
-		return 1
+		return insertGlobalsAt(commandArgs, globals, 1)
 	})
 }
 
-func normalizeGlobalFlags(args []string, flags []Flag, insertionIndex func([]string) int) ([]string, error) {
+func normalizeGlobalFlags(args []string, flags []Flag, place func([]string, []string) []string) ([]string, error) {
 	if len(args) == 0 {
 		return nil, nil
 	}
@@ -97,10 +105,10 @@ func normalizeGlobalFlags(args []string, flags []Flag, insertionIndex func([]str
 			if index+1 >= len(args) {
 				return nil, fmt.Errorf("command is required after --")
 			}
-			return insertGlobals(args[index+1:], globals, insertionIndex), nil
+			return place(args[index+1:], globals), nil
 		}
 		if !isFlagToken(arg) {
-			return insertGlobals(args[index:], globals, insertionIndex), nil
+			return place(args[index:], globals), nil
 		}
 		if arg == "--help" || arg == "-h" || arg == "--version" || arg == "-v" {
 			return args[index:], nil
@@ -133,15 +141,45 @@ func normalizeGlobalFlags(args []string, flags []Flag, insertionIndex func([]str
 	return nil, fmt.Errorf("command is required")
 }
 
+func filterGlobalArguments(arguments []string, definitions []Flag, allowed []string) []string {
+	if allowed == nil {
+		return arguments
+	}
+	allowedNames := make(map[string]struct{}, len(allowed))
+	for _, name := range allowed {
+		allowedNames["--"+strings.TrimPrefix(name, "--")] = struct{}{}
+	}
+	known := make(map[string]Flag, len(definitions))
+	for _, flag := range definitions {
+		known["--"+flag.Name] = flag
+	}
+
+	filtered := make([]string, 0, len(arguments))
+	for index := 0; index < len(arguments); index++ {
+		name := arguments[index]
+		flag := known[name]
+		_, keep := allowedNames[name]
+		if keep {
+			filtered = append(filtered, name)
+		}
+		if flag.TakesValue {
+			index++
+			if index < len(arguments) && keep {
+				filtered = append(filtered, arguments[index])
+			}
+		}
+	}
+	return filtered
+}
+
 func isFlagToken(value string) bool {
 	return value != "-" && strings.HasPrefix(value, "-")
 }
 
-func insertGlobals(args, globals []string, insertionIndex func([]string) int) []string {
+func insertGlobalsAt(args, globals []string, index int) []string {
 	if len(args) == 0 || len(globals) == 0 {
 		return args
 	}
-	index := insertionIndex(args)
 	if index < 0 {
 		index = 0
 	}
