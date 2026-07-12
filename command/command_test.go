@@ -105,6 +105,56 @@ func TestNormalizeGlobalFlagsForRegistryPreservesLeadingArguments(t *testing.T) 
 	}
 }
 
+func TestNormalizeGlobalFlagsForRegistryAppliesCommandPolicy(t *testing.T) {
+	registry := Registry{
+		GlobalFlags: []Flag{
+			{Name: "config", TakesValue: true},
+			{Name: "profile", TakesValue: true},
+			{Name: "endpoint", TakesValue: true},
+			{Name: "verbose"},
+		},
+		Commands: []Command{
+			{Name: "read"},
+			{Name: "validate-config", GlobalFlags: []string{"config", "profile", "verbose"}},
+			{Name: "init-config", GlobalFlags: []string{}},
+		},
+	}
+
+	tests := []struct {
+		name string
+		args []string
+		want []string
+	}{
+		{
+			name: "inherits all",
+			args: []string{"--endpoint", "opc.tcp://host:4840", "--verbose", "read"},
+			want: []string{"read", "--endpoint", "opc.tcp://host:4840", "--verbose"},
+		},
+		{
+			name: "allows subset",
+			args: []string{"--config", "site.yaml", "--endpoint", "opc.tcp://host:4840", "--verbose", "validate-config"},
+			want: []string{"validate-config", "--config", "site.yaml", "--verbose"},
+		},
+		{
+			name: "allows none",
+			args: []string{"--config", "site.yaml", "--verbose", "init-config"},
+			want: []string{"init-config"},
+		},
+	}
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			got, err := NormalizeGlobalFlagsForRegistry(test.args, registry)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if !reflect.DeepEqual(got, test.want) {
+				t.Fatalf("NormalizeGlobalFlagsForRegistry() = %#v, want %#v", got, test.want)
+			}
+		})
+	}
+}
+
 func TestNormalizeGlobalFlagsRejectsUnknownPrefixFlag(t *testing.T) {
 	if _, err := NormalizeGlobalFlags([]string{"--endpoint", "x", "read"}, globalFlags); err == nil {
 		t.Fatal("unknown global flag accepted")
