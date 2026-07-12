@@ -45,22 +45,22 @@ func bash(registry command.Registry) string {
   nested="${COMP_WORDS[2]}"
 
   if [ "$COMP_CWORD" -eq 1 ]; then
-    COMPREPLY=( $(compgen -W "%[2]s" -- "$cur") )
+    COMPREPLY=( $(compgen -W "%[3]s" -- "$cur") )
     return 0
   fi
 
   key="$command"
-  if [ "$COMP_CWORD" -gt 2 ] && [[ "$nested" != -* ]]; then
+  if [ "$COMP_CWORD" -gt 2 ] && [[ "$nested" != -* ]] && [[ " %[6]s " == *" $command "* ]]; then
     key="$command:$nested"
   fi
 
   case "$key" in
-%[3]s    *) words="%[4]s" ;;
+%[4]s    *) words="%[5]s" ;;
   esac
   COMPREPLY=( $(compgen -W "$words" -- "$cur") )
 }
-complete -F _%[1]s_completion %[1]s
-`, shellName(registry.Binary), strings.Join(registry.Names(), " "), cases.String(), strings.Join(flagNames(registry.GlobalFlags), " "))
+complete -F _%[1]s_completion %[2]s
+`, shellName(registry.Binary), registry.Binary, strings.Join(registry.Names(), " "), cases.String(), strings.Join(flagNames(registry.GlobalFlags), " "), strings.Join(commandsWithSubcommands(registry.Commands), " "))
 }
 
 func zsh(registry command.Registry) string {
@@ -108,7 +108,7 @@ _%[2]s_completion() {
   fi
 
   key="$command"
-  if (( CURRENT > 3 )) && [[ "$nested" != -* ]]; then
+  if (( CURRENT > 3 )) && [[ "$nested" != -* ]] && [[ " %[6]s " == *" $command "* ]]; then
     key="$command:$nested"
   fi
 
@@ -117,13 +117,23 @@ _%[2]s_completion() {
   esac
 }
 _%[2]s_completion
-`, registry.Binary, shellName(registry.Binary), strings.Join(commandSpecs, " "), cases.String(), quoteWords(strings.Join(flagNames(registry.GlobalFlags), " ")))
+`, registry.Binary, shellName(registry.Binary), strings.Join(commandSpecs, " "), cases.String(), quoteWords(strings.Join(flagNames(registry.GlobalFlags), " ")), strings.Join(commandsWithSubcommands(registry.Commands), " "))
 }
 
 func commandNames(commands []command.Command) []string {
 	names := make([]string, 0, len(commands))
 	for _, cmd := range commands {
 		names = append(names, cmd.Name)
+	}
+	return names
+}
+
+func commandsWithSubcommands(commands []command.Command) []string {
+	names := make([]string, 0, len(commands))
+	for _, cmd := range commands {
+		if len(cmd.Subcommands) > 0 {
+			names = append(names, cmd.Name)
+		}
 	}
 	return names
 }
