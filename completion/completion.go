@@ -24,126 +24,235 @@ func Write(w io.Writer, shell string, registry command.Registry) error {
 	}
 }
 
+type completionContext struct {
+	key      string
+	children []command.Command
+	flags    []string
+}
+
 func bash(registry command.Registry) string {
+	contexts := buildContexts(registry)
 	var cases strings.Builder
-	for _, cmd := range registry.Commands {
-		globals := applicableGlobalFlags(registry.GlobalFlags, cmd.GlobalFlags)
-		words := mergeWords(flagNames(globals), flagNames(cmd.Flags))
-		if len(cmd.Subcommands) > 0 {
-			words = mergeWords(commandNames(cmd.Subcommands), words)
-		}
-		fmt.Fprintf(&cases, "    %s) words=%q ;;\n", cmd.Name, strings.Join(words, " "))
-		for _, sub := range cmd.Subcommands {
-			nestedGlobals := globals
-			if sub.GlobalFlags != nil {
-				nestedGlobals = applicableGlobalFlags(registry.GlobalFlags, sub.GlobalFlags)
-			}
-			nested := mergeWords(flagNames(nestedGlobals), flagNames(cmd.Flags), flagNames(sub.Flags))
-			fmt.Fprintf(&cases, "    %s:%s) words=%q ;;\n", cmd.Name, sub.Name, strings.Join(nested, " "))
-		}
+	for _, context := range contexts {
+		words := mergeWords(commandNames(context.children), context.flags)
+		fmt.Fprintf(&cases, "    %s) words=%q ;;\n", context.key, strings.Join(words, " "))
+	}
+
+	rootWords := mergeWords(commandNames(registry.Commands), flagNames(registry.GlobalFlags))
+	paths := contextKeys(contexts)
+	exactValueFlags, inlineValueFlags := valueFlagPatterns(registry)
+	valueCases := ""
+	if exactValueFlags != "" {
+		valueCases = fmt.Sprintf(`    %s) expect_value=1; continue ;;
+    %s) continue ;;
+`, exactValueFlags, inlineValueFlags)
 	}
 
 	return fmt.Sprintf(`_%[1]s_completion() {
-  local cur command nested key words
+  local cur key candidate token words expect_value path_open i
   cur="${COMP_WORDS[COMP_CWORD]}"
-  command="${COMP_WORDS[1]}"
-  nested="${COMP_WORDS[2]}"
+  key=""
+  expect_value=0
+  path_open=1
 
-  if [ "$COMP_CWORD" -eq 1 ]; then
-    COMPREPLY=( $(compgen -W "%[3]s" -- "$cur") )
+  for ((i=1; i<COMP_CWORD; i++)); do
+    token="${COMP_WORDS[i]}"
+    if (( expect_value )); then
+      expect_value=0
+      continue
+    fi
+    case "$token" in
+%[5]s    esac
+    if [[ "$token" == -* ]]; then
+      continue
+    fi
+    if (( ! path_open )); then
+      continue
+    fi
+    if [[ -z "$key" ]]; then
+      candidate="$token"
+    else
+      candidate="$key:$token"
+    fi
+    case "$candidate" in
+      %[6]s) key="$candidate" ;;
+      *) path_open=0 ;;
+    esac
+  done
+
+  if (( expect_value )); then
+    COMPREPLY=()
     return 0
   fi
 
-  key="$command"
-  if [ "$COMP_CWORD" -gt 2 ] && [[ "$nested" != -* ]] && [[ " %[6]s " == *" $command "* ]]; then
-    key="$command:$nested"
-  fi
-
   case "$key" in
-%[4]s    *) words="%[5]s" ;;
+    "") words=%[4]q ;;
+%[3]s    *) words="" ;;
   esac
   COMPREPLY=( $(compgen -W "$words" -- "$cur") )
 }
 complete -F _%[1]s_completion %[2]s
-`, shellName(registry.Binary), registry.Binary, strings.Join(registry.Names(), " "), cases.String(), strings.Join(flagNames(registry.GlobalFlags), " "), strings.Join(commandsWithSubcommands(registry.Commands), " "))
+`, shellName(registry.Binary), registry.Binary, cases.String(), strings.Join(rootWords, " "), valueCases, commandPathPattern(paths))
 }
 
 func zsh(registry command.Registry) string {
-	var commandSpecs []string
+	contexts := buildContexts(registry)
 	var cases strings.Builder
-	for _, cmd := range registry.Commands {
-		summary := cmd.Summary
-		if summary == "" {
-			summary = cmd.Name
+	for _, context := range contexts {
+		values := make([]string, 0, len(context.children)+len(context.flags))
+		for _, child := range context.children {
+			summary := child.Summary
+			if summary == "" {
+				summary = child.Name
+			}
+			values = append(values, child.Name+":"+summary)
 		}
-		commandSpecs = append(commandSpecs, fmt.Sprintf("'%s:%s'", cmd.Name, escapeZsh(summary)))
+		values = append(values, context.flags...)
+		label := "flag"
+		if len(context.children) > 0 {
+			label = "command or flag"
+		}
+		fmt.Fprintf(&cases, "    %s) _values %s %s ;;\n", context.key, quoteZsh(label), quoteZshWords(values))
+	}
 
-		globals := applicableGlobalFlags(registry.GlobalFlags, cmd.GlobalFlags)
-		flags := mergeWords(flagNames(globals), flagNames(cmd.Flags))
-		if len(cmd.Subcommands) > 0 {
-			var subSpecs []string
-			for _, sub := range cmd.Subcommands {
-				subSummary := sub.Summary
-				if subSummary == "" {
-					subSummary = sub.Name
-				}
-				subSpecs = append(subSpecs, fmt.Sprintf("'%s:%s'", sub.Name, escapeZsh(subSummary)))
-			}
-			fmt.Fprintf(&cases, "    %s)\n      if (( CURRENT == 3 )); then\n        _describe 'subcommand' '(%s)'\n      else\n        _values 'flag' %s\n      fi\n      ;;\n", cmd.Name, strings.Join(subSpecs, " "), quoteWords(strings.Join(flags, " ")))
-			for _, sub := range cmd.Subcommands {
-				nestedGlobals := globals
-				if sub.GlobalFlags != nil {
-					nestedGlobals = applicableGlobalFlags(registry.GlobalFlags, sub.GlobalFlags)
-				}
-				nested := mergeWords(flagNames(nestedGlobals), flagNames(cmd.Flags), flagNames(sub.Flags))
-				fmt.Fprintf(&cases, "    %s:%s) _values 'flag' %s ;;\n", cmd.Name, sub.Name, quoteWords(strings.Join(nested, " ")))
-			}
-			continue
+	rootValues := make([]string, 0, len(registry.Commands)+len(registry.GlobalFlags))
+	for _, registered := range registry.Commands {
+		summary := registered.Summary
+		if summary == "" {
+			summary = registered.Name
 		}
-		fmt.Fprintf(&cases, "    %s) _values 'flag' %s ;;\n", cmd.Name, quoteWords(strings.Join(flags, " ")))
+		rootValues = append(rootValues, registered.Name+":"+summary)
+	}
+	rootValues = append(rootValues, flagNames(registry.GlobalFlags)...)
+
+	paths := contextKeys(contexts)
+	exactValueFlags, inlineValueFlags := valueFlagPatterns(registry)
+	valueCases := ""
+	if exactValueFlags != "" {
+		valueCases = fmt.Sprintf(`      %s) expect_value=1; continue ;;
+      %s) continue ;;
+`, exactValueFlags, inlineValueFlags)
 	}
 
 	return fmt.Sprintf(`#compdef %[1]s
 
 _%[2]s_completion() {
-  local command nested key
-  command="$words[2]"
-  nested="$words[3]"
+  local key candidate token expect_value path_open i
+  key=""
+  expect_value=0
+  path_open=1
 
-  if (( CURRENT == 2 )); then
-    local -a commands
-    commands=(%[3]s)
-    _describe 'command' commands
-    return
-  fi
+  for ((i=2; i<CURRENT; i++)); do
+    token="${words[i]}"
+    if (( expect_value )); then
+      expect_value=0
+      continue
+    fi
+    case "$token" in
+%[5]s    esac
+    if [[ "$token" == -* ]]; then
+      continue
+    fi
+    if (( ! path_open )); then
+      continue
+    fi
+    if [[ -z "$key" ]]; then
+      candidate="$token"
+    else
+      candidate="$key:$token"
+    fi
+    case "$candidate" in
+      %[6]s) key="$candidate" ;;
+      *) path_open=0 ;;
+    esac
+  done
 
-  key="$command"
-  if (( CURRENT > 3 )) && [[ "$nested" != -* ]] && [[ " %[6]s " == *" $command "* ]]; then
-    key="$command:$nested"
+  if (( expect_value )); then
+    return 0
   fi
 
   case "$key" in
-%[4]s    *) _values 'flag' %[5]s ;;
-  esac
+    '') _values 'command or global flag' %[4]s ;;
+%[3]s  esac
 }
 _%[2]s_completion
-`, registry.Binary, shellName(registry.Binary), strings.Join(commandSpecs, " "), cases.String(), quoteWords(strings.Join(flagNames(registry.GlobalFlags), " ")), strings.Join(commandsWithSubcommands(registry.Commands), " "))
+`, registry.Binary, shellName(registry.Binary), cases.String(), quoteZshWords(rootValues), valueCases, commandPathPattern(paths))
+}
+
+func buildContexts(registry command.Registry) []completionContext {
+	var contexts []completionContext
+	walkContexts(&contexts, registry, registry.Commands, nil, nil, registry.GlobalFlags)
+	return contexts
+}
+
+func walkContexts(contexts *[]completionContext, registry command.Registry, commands []command.Command, path []string, inheritedFlags, globals []command.Flag) {
+	for _, registered := range commands {
+		currentGlobals := globals
+		if registered.GlobalFlags != nil {
+			currentGlobals = applicableGlobalFlags(registry.GlobalFlags, registered.GlobalFlags)
+		}
+		currentPath := append(append([]string(nil), path...), registered.Name)
+		currentFlags := mergeWords(flagNames(currentGlobals), flagNames(inheritedFlags), flagNames(registered.Flags))
+		*contexts = append(*contexts, completionContext{
+			key:      strings.Join(currentPath, ":"),
+			children: registered.Subcommands,
+			flags:    currentFlags,
+		})
+		nextInherited := append(append([]command.Flag(nil), inheritedFlags...), registered.Flags...)
+		walkContexts(contexts, registry, registered.Subcommands, currentPath, nextInherited, currentGlobals)
+	}
+}
+
+func contextKeys(contexts []completionContext) []string {
+	keys := make([]string, 0, len(contexts))
+	for _, context := range contexts {
+		keys = append(keys, context.key)
+	}
+	return keys
+}
+
+func commandPathPattern(paths []string) string {
+	if len(paths) == 0 {
+		return "__industrial_cli_no_command__"
+	}
+	return strings.Join(paths, "|")
+}
+
+func valueFlagPatterns(registry command.Registry) (exact string, inline string) {
+	values := map[string]bool{}
+	for _, flag := range registry.GlobalFlags {
+		if flag.TakesValue {
+			values["--"+flag.Name] = true
+		}
+	}
+	collectValueFlags(values, registry.Commands)
+	names := make([]string, 0, len(values))
+	for name := range values {
+		names = append(names, name)
+	}
+	sort.Strings(names)
+	inlineNames := make([]string, len(names))
+	for index, name := range names {
+		inlineNames[index] = name + "=*"
+	}
+	return strings.Join(names, "|"), strings.Join(inlineNames, "|")
+}
+
+func collectValueFlags(values map[string]bool, commands []command.Command) {
+	for _, registered := range commands {
+		for _, flag := range registered.Flags {
+			if flag.TakesValue {
+				values["--"+flag.Name] = true
+			}
+		}
+		collectValueFlags(values, registered.Subcommands)
+	}
 }
 
 func commandNames(commands []command.Command) []string {
 	names := make([]string, 0, len(commands))
 	for _, cmd := range commands {
 		names = append(names, cmd.Name)
-	}
-	return names
-}
-
-func commandsWithSubcommands(commands []command.Command) []string {
-	names := make([]string, 0, len(commands))
-	for _, cmd := range commands {
-		if len(cmd.Subcommands) > 0 {
-			names = append(names, cmd.Name)
-		}
 	}
 	return names
 }
@@ -195,13 +304,17 @@ func shellName(binary string) string {
 	return replacer.Replace(binary)
 }
 
-func quoteWords(words string) string {
-	if words == "" {
+func quoteZshWords(words []string) string {
+	if len(words) == 0 {
 		return "''"
 	}
-	return "'" + strings.ReplaceAll(words, " ", "' '") + "'"
+	quoted := make([]string, len(words))
+	for index, word := range words {
+		quoted[index] = quoteZsh(word)
+	}
+	return strings.Join(quoted, " ")
 }
 
-func escapeZsh(value string) string {
-	return strings.ReplaceAll(value, "'", "'\\''")
+func quoteZsh(value string) string {
+	return "'" + strings.ReplaceAll(value, "'", "'\\''") + "'"
 }
