@@ -2,6 +2,9 @@ package completion
 
 import (
 	"bytes"
+	"os/exec"
+	"reflect"
+	"strconv"
 	"strings"
 	"testing"
 
@@ -94,4 +97,55 @@ func TestWriteZshIncludesRecursiveCommandsAndScansWords(t *testing.T) {
 	if strings.Contains(script, `command="$words[2]"`) {
 		t.Fatalf("zsh completion still assumes a fixed command index: %s", script)
 	}
+}
+
+func TestBashCompletionResolvesRecursiveCommandAfterPrefixGlobals(t *testing.T) {
+	tests := []struct {
+		name  string
+		words []string
+		want  []string
+	}{
+		{
+			name:  "nested command",
+			words: []string{"example-cli", "--config", "site.yaml", "send", "transaction", ""},
+			want:  []string{"--config", "--endpoint", "--timeout", "--verbose", "start"},
+		},
+		{
+			name:  "nested leaf flags",
+			words: []string{"example-cli", "send", "transaction", "start", ""},
+			want:  []string{"--config", "--endpoint", "--timeout", "--verbose", "--yes"},
+		},
+	}
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			if got := runBashCompletion(t, test.words); !reflect.DeepEqual(got, test.want) {
+				t.Fatalf("completion for %#v = %#v, want %#v", test.words, got, test.want)
+			}
+		})
+	}
+}
+
+func runBashCompletion(t *testing.T, words []string) []string {
+	t.Helper()
+	var out bytes.Buffer
+	if err := Write(&out, "bash", recursiveRegistry); err != nil {
+		t.Fatal(err)
+	}
+
+	quotedWords := make([]string, len(words))
+	for index, word := range words {
+		quotedWords[index] = bashQuote(word)
+	}
+	script := out.String() + "\nCOMP_WORDS=(" + strings.Join(quotedWords, " ") + ")\n" +
+		"COMP_CWORD=" + strconv.Itoa(len(words)-1) + "\n_example_cli_completion\nprintf '%s\\n' \"${COMPREPLY[@]}\"\n"
+	result, err := exec.Command("bash", "-c", script).Output()
+	if err != nil {
+		t.Fatalf("run Bash completion: %v", err)
+	}
+	return strings.Fields(string(result))
+}
+
+func bashQuote(value string) string {
+	return "'" + strings.ReplaceAll(value, "'", "'\\\"'\\\"'") + "'"
 }
